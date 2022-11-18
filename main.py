@@ -29,6 +29,8 @@ def handle_event(event, context):
     secret_client = boto3.client("secretsmanager")
 
     if event["Step"] == "createSecret":
+        # first step of the process, we are generating a new value for the next
+        # version of the secret here.
         print(
             f"executing create step for secret {event['SecretId']} for "
             f"version {event['ClientRequestToken']}"
@@ -50,6 +52,10 @@ def handle_event(event, context):
         return None
 
     elif event["Step"] == "setSecret":
+        # in the next step, we apply the new version of the secret to the
+        # remote server. There can be situations where a secret is not
+        # necessarily about a service credential. In those cases, this step can
+        # be skipped.
         print(
             f"setting the new password from secret {event['SecretId']} for "
             f"version {event['ClientRequestToken']}"
@@ -58,13 +64,26 @@ def handle_event(event, context):
         # real world case would call the service API to set the new password
         # for an example POST /_security/user/admin/_password for an
         # Elasticsearch instance
-        print("changing password in the remote server")
+
+        # retrieve the secret version that will be the new value, we don't need
+        # to specify the `VersionStage` as AWSPENDING since we specify the
+        # version ID.
+        secret_version = secret_client.get_secret_value(
+            SecretId=event["SecretId"],
+            VersionId=event["ClientRequestToken"],
+        )
+
+        new_value = secret_version["SecretString"]
+        print(f"changing password in the remote server with value {new_value}")
 
         # done with setting the new password, from now on, clients should use
         # the newly generated password to connect to the remote system
         return None
 
     elif event["Step"] == "testSecret":
+        # in this step, the remote server change is tested to be successful.
+        # Like the previous step, if the secret is not a service credential or
+        # has nothing to do with an external service, this step can be skipped.
         print(
             f"testing the newly set password from secret {event['SecretId']} "
             f"for version {event['ClientRequestToken']}"
@@ -74,12 +93,24 @@ def handle_event(event, context):
         # applied on the remote service and that the new version of the secret
         # is ready to be promoted to AWSCURRENT stage. In the sample case, we
         # just output a message.
-        print("testing the newly set password in the remote server")
+
+        secret_version = secret_client.get_secret_value(
+            SecretId=event["SecretId"],
+            VersionId=event["ClientRequestToken"],
+        )
+
+        new_value = secret_version["SecretString"]
+        print(
+            f"testing the newly set password {new_value} in the remote server")
 
         # done with testing, we are good to finalise the rotation
         return None
 
     elif event["Step"] == "finishSecret":
+        # final step of the rotation process. We are transitioning the new
+        # secret version to be the actual "current" version. The previous
+        # version is preserved, however default reads point to the new version
+        # only.
         print(
             f"finalising the new password for secret {event['SecretId']} "
             f"for version {event['ClientRequestToken']}"
